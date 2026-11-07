@@ -34,8 +34,9 @@ Command line (same engine): `"STEP Drawing.exe" --cli part.step -o part.pdf -o p
 ## Releasing a new version (maintainers)
 
 1. Bump `__version__` in `stepdraw/__init__.py`.
-2. Commit, then tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
-3. GitHub Actions builds and tests the installer and publishes the release. Installed copies offer the update on next start.
+2. Commit and push to `main`.
+3. GitHub Actions builds and tests the installer, and because no release exists for that version yet, publishes
+   release `v<version>` with the Setup.exe. Installed copies offer the update on next start.
 
 The installer bundles its own Python runtime (embedded CPython 3.13) with Open CASCADE (`cadquery-ocp`), Qt (`PySide6`) and `ezdxf`;
 see `packaging/build_windows.ps1`. To build locally on Windows you need Python 3.13 and Inno Setup 6, then run that script.
