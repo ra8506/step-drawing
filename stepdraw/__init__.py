@@ -1,4 +1,4 @@
 """STEP Drawing: turn STEP models into dimensioned 2D engineering drawings."""
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 APP_NAME = "STEP Drawing"
 GITHUB_REPO = "ra8506/step-drawing"  # releases are fetched from here by the updater

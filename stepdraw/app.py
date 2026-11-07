@@ -1,6 +1,8 @@
 """Desktop GUI."""
 from __future__ import annotations
 
+import copy
+import json
 import sys
 import traceback
 from pathlib import Path
@@ -8,12 +10,13 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QPointF, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFormLayout, QGroupBox,
-    QLineEdit, QMainWindow, QMessageBox, QProgressDialog, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QGroupBox, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
+    QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from . import APP_NAME, __version__
-from .drawing import SCALES, SHEETS, Options, build_sheet
+from .drawing import SCALES, SHEETS, Options, Tol, build_sheet, dim_text
 from .export import export, paint
 
 STEP_FILTER = "STEP files (*.step *.stp *.STEP *.STP);;All files (*)"
@@ -56,18 +59,28 @@ def run_in_thread(owner, fn, on_done, on_fail, on_progress=None):
 
 # ----------------------------------------------------------------------------- preview
 class SheetView(QWidget):
+    """Sheet preview: scroll to zoom, drag to pan, hover + click a dimension to edit it."""
+    dimClicked = Signal(object, object)  # DimRef, global QPoint
+    dimDelete = Signal(object)
+
     def __init__(self):
         super().__init__()
         self.sheet = None
         self.zoom = 1.0
         self.offset = QPointF(0, 0)
         self._drag = None
+        self._moved = False
+        self._k = 1.0
+        self._org = QPointF(0, 0)
+        self.hover = None
         self.setMinimumSize(400, 300)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.message = "Open a STEP file to start  (File ▸ Open, or drag a .step file here)"
 
     def set_sheet(self, sheet, reset=False):
         self.sheet = sheet
+        self.hover = None
         if reset:
             self.zoom, self.offset = 1.0, QPointF(0, 0)
         self.update()
@@ -76,6 +89,23 @@ class SheetView(QWidget):
         if not self.sheet:
             return 1.0
         return min((self.width() - 20) / self.sheet.width, (self.height() - 20) / self.sheet.height)
+
+    def _to_sheet(self, pos):
+        return (pos.x() - self._org.x()) / self._k, self.sheet.height - (pos.y() - self._org.y()) / self._k
+
+    def dim_at(self, pos):
+        if not self.sheet:
+            return None
+        x, y = self._to_sheet(pos)
+        pad = max(1.0, 4 / self._k)
+        best = None
+        for d in self.sheet.dims:
+            x0, y0, x1, y1 = d.bbox
+            if x0 - pad <= x <= x1 + pad and y0 - pad <= y <= y1 + pad:
+                area = (x1 - x0) * (y1 - y0)
+                if best is None or area < best[0]:
+                    best = (area, d)
+        return best[1] if best else None
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -88,14 +118,22 @@ class SheetView(QWidget):
         w, h = self.sheet.width * k, self.sheet.height * k
         x = (self.width() - w) / 2 + self.offset.x()
         y = (self.height() - h) / 2 + self.offset.y()
+        self._k, self._org = k, QPointF(x, y)
         p.fillRect(int(x) + 4, int(y) + 4, int(w), int(h), QColor(0, 0, 0, 60))
+        p.save()
         p.translate(x, y)
         paint(self.sheet, p, k)
+        p.restore()
+        if self.hover is not None:
+            x0, y0, x1, y1 = self.hover.bbox
+            H = self.sheet.height
+            p.setPen(QColor(30, 110, 220))
+            p.setBrush(QColor(30, 110, 220, 40))
+            p.drawRect(int(x + x0 * k - 3), int(y + (H - y1) * k - 3), int((x1 - x0) * k + 6), int((y1 - y0) * k + 6))
 
     def wheelEvent(self, e):
         f = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
         new = max(0.2, min(40.0, self.zoom * f))
-        # zoom about the cursor
         c = QPointF(self.width() / 2, self.height() / 2) + self.offset
         pos = e.position()
         self.offset += (pos - c) * (1 - new / self.zoom)
@@ -104,19 +142,98 @@ class SheetView(QWidget):
 
     def mousePressEvent(self, e):
         self._drag = e.position()
+        self._moved = False
 
     def mouseMoveEvent(self, e):
         if self._drag is not None and e.buttons():
-            self.offset += e.position() - self._drag
-            self._drag = e.position()
+            delta = e.position() - self._drag
+            if self._moved or abs(delta.x()) + abs(delta.y()) > 3:
+                self._moved = True
+                self.offset += delta
+                self._drag = e.position()
+                self.update()
+            return
+        d = self.dim_at(e.position())
+        if d is not self.hover:
+            self.hover = d
+            self.setCursor(Qt.PointingHandCursor if d else Qt.ArrowCursor)
+            self.setToolTip("Click to set a tolerance or delete this dimension" if d else "")
             self.update()
 
-    def mouseReleaseEvent(self, _):
+    def mouseReleaseEvent(self, e):
+        clicked = self._drag is not None and not self._moved
         self._drag = None
+        if clicked:
+            d = self.dim_at(e.position())
+            if d is not None:
+                self.dimClicked.emit(d, e.globalPosition().toPoint())
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.hover is not None:
+            self.dimDelete.emit(self.hover)
+        else:
+            super().keyPressEvent(e)
 
     def mouseDoubleClickEvent(self, _):
         self.zoom, self.offset = 1.0, QPointF(0, 0)
         self.update()
+
+
+class ToleranceDialog(QDialog):
+    KINDS = [("sym", "Symmetric  (±)"), ("dev", "Deviation  (+upper / −lower)"), ("limits", "Limits  (max / min)")]
+
+    def __init__(self, parent, dim, units: str, tol=None):
+        super().__init__(parent)
+        self.setWindowTitle("Dimension tolerance")
+        self.units = units
+        k = 25.4 if units == "in" else 1.0
+        self.k = k
+        f = QFormLayout(self)
+        f.addRow(QLabel(f"<b>{dim.label}</b>"))
+        self.kind = QComboBox()
+        for v, t in self.KINDS:
+            self.kind.addItem(t, v)
+        self.upper = QDoubleSpinBox()
+        self.lower = QDoubleSpinBox()
+        for sb in (self.upper, self.lower):
+            sb.setDecimals(4 if units == "in" else 3)
+            sb.setRange(0, 1000)
+            sb.setSingleStep(0.001 if units == "in" else 0.01)
+        tol = tol or Tol("sym", 0.1 if units == "mm" else 0.127, 0.1 if units == "mm" else 0.127)
+        self.kind.setCurrentIndex([v for v, _ in self.KINDS].index(tol.kind))
+        self.upper.setValue(tol.upper / k)
+        self.lower.setValue(tol.lower / k)
+        f.addRow("Type", self.kind)
+        self.lu = QLabel()
+        self.ll = QLabel()
+        f.addRow(self.lu, self.upper)
+        f.addRow(self.ll, self.lower)
+        self.preview = QLabel()
+        f.addRow("Shows as", self.preview)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        f.addRow(bb)
+        self.dim = dim
+        for w in (self.kind,):
+            w.currentIndexChanged.connect(self._sync)
+        self.upper.valueChanged.connect(self._sync)
+        self.lower.valueChanged.connect(self._sync)
+        self._sync()
+
+    def tol(self):
+        return Tol(self.kind.currentData(), self.upper.value() * self.k, self.lower.value() * self.k)
+
+    def _sync(self, *_):
+        kind = self.kind.currentData()
+        u = "in" if self.units == "in" else "mm"
+        self.lu.setText(f"Tolerance ({u})" if kind == "sym" else f"Upper (+, {u})")
+        self.ll.setText(f"Lower (−, {u})")
+        self.lower.setVisible(kind != "sym")
+        self.ll.setVisible(kind != "sym")
+        opt = Options(units=self.units, decimals=3 if self.units == "in" else 2, tolerances={"k": self.tol()})
+        main, up, lo = dim_text(self.dim.value, opt, "k")
+        self.preview.setText(main if up is None else (f"{up} / {lo}" if main is None else f"{main}  {up} / {lo}"))
 
 
 # ----------------------------------------------------------------------------- main window
@@ -132,7 +249,11 @@ class MainWindow(QMainWindow):
         self.cache: dict = {}
         self.sheet = None
 
+        self.edits = self._empty_edits()
+        self.undo_stack: list = []
         self.view = SheetView()
+        self.view.dimClicked.connect(self.dim_menu)
+        self.view.dimDelete.connect(lambda d: self.delete_dim(d))
         self.setCentralWidget(self.view)
         self._build_actions()
         self._build_panel()
@@ -173,6 +294,9 @@ class MainWindow(QMainWindow):
             a.setEnabled(False)
         fm.addSeparator()
         act("Exit", self.close, "Ctrl+Q", toolbar=False)
+
+        em = m.addMenu("&Edit")
+        act("Undo dimension change", self.undo, "Ctrl+Z", menu=em, toolbar=False)
 
         vm = m.addMenu("&View")
         act("Fit to window", lambda: self.view.mouseDoubleClickEvent(None), "Ctrl+0", menu=vm, toolbar=False)
@@ -234,6 +358,34 @@ class MainWindow(QMainWindow):
             cb.setChecked(True)
             self.dim_cbs[key] = cb
             v.addWidget(cb)
+        hint = QLabel("Click a dimension on the drawing to add a tolerance or delete it.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #666;")
+        v.addWidget(hint)
+        self.restore_btn = QPushButton("Restore deleted dimensions")
+        self.restore_btn.clicked.connect(self.restore_deleted)
+        self.clear_tol_btn = QPushButton("Clear all tolerances")
+        self.clear_tol_btn.clicked.connect(self.clear_tolerances)
+        v.addWidget(self.restore_btn)
+        v.addWidget(self.clear_tol_btn)
+        f2 = QFormLayout()
+        self.general_tol = QLineEdit()
+        self.general_tol.setPlaceholderText("e.g. ±0.1")
+        f2.addRow("General tolerance", self.general_tol)
+        v.addLayout(f2)
+        lay.addWidget(g)
+
+        g = QGroupBox("Notes")
+        v = QVBoxLayout(g)
+        self.confidential_cb = QCheckBox("Confidential / proprietary notice")
+        self.confidential_cb.setToolTip("Adds a proprietary statement (uses the Company field) and a "
+                                        "CONFIDENTIAL · PROPRIETARY header")
+        v.addWidget(self.confidential_cb)
+        v.addWidget(QLabel("Drawing notes (one per line):"))
+        self.notes_edit = QPlainTextEdit()
+        self.notes_edit.setPlaceholderText("e.g.\nBreak all sharp edges\nDeburr\nFinish: anodise black")
+        self.notes_edit.setFixedHeight(90)
+        v.addWidget(self.notes_edit)
         lay.addWidget(g)
 
         g = QGroupBox("Title block")
@@ -255,6 +407,9 @@ class MainWindow(QMainWindow):
         self.yup_cb.toggled.connect(self.reload)
         for e in self.fields.values():
             e.textChanged.connect(self.schedule_rebuild)
+        self.general_tol.textChanged.connect(self.schedule_rebuild)
+        self.confidential_cb.toggled.connect(self.schedule_rebuild)
+        self.notes_edit.textChanged.connect(self.schedule_rebuild)
 
         scroll = QScrollArea()
         scroll.setWidget(panel)
@@ -284,6 +439,10 @@ class MainWindow(QMainWindow):
         for k in ("drawn_by", "company"):
             self.fields[k].setText(s.value(k, ""))
         self.fields["revision"].setText("A")
+        self.general_tol.setText(s.value("general_tol", ""))
+        self.confidential_cb.setChecked(s.value("confidential", False, type=bool))
+        self.notes_edit.setPlainText(s.value("notes", ""))
+        self._update_edit_buttons()
         self.auto_update.setChecked(s.value("auto_update", True, type=bool))
 
     def _save_settings(self):
@@ -295,6 +454,10 @@ class MainWindow(QMainWindow):
         s.setValue("hidden", self.hidden_cb.isChecked())
         for k in ("drawn_by", "company"):
             s.setValue(k, self.fields[k].text())
+        s.setValue("general_tol", self.general_tol.text())
+        s.setValue("confidential", self.confidential_cb.isChecked())
+        s.setValue("notes", self.notes_edit.toPlainText())
+        self._save_edits()
 
     def closeEvent(self, e):
         self._save_settings()
@@ -311,7 +474,98 @@ class MainWindow(QMainWindow):
             scale=self.scale_cb.currentData(),
             **{k: cb.isChecked() for k, cb in self.dim_cbs.items()},
             **{k: e.text().strip() for k, e in self.fields.items()},
+            notes=self.notes_edit.toPlainText(),
+            confidential=self.confidential_cb.isChecked(),
+            general_tol=self.general_tol.text().strip(),
+            tolerances=dict(self.edits["tol"]),
+            deleted=set(self.edits["deleted"]),
+            leader_angles=dict(self.edits["angles"]),
         )
+
+    # --- per-file dimension edits (tolerances, deletions, leader directions)
+    @staticmethod
+    def _empty_edits():
+        return {"tol": {}, "deleted": set(), "angles": {}}
+
+    def _edits_key(self):
+        return "edits/" + str(self.path).replace("\\", "/").replace("/", "|") if self.path else None
+
+    def _load_edits(self):
+        self.edits = self._empty_edits()
+        self.undo_stack.clear()
+        key = self._edits_key()
+        raw = self.settings.value(key, "") if key else ""
+        if raw:
+            try:
+                d = json.loads(raw)
+                self.edits = {"tol": {k: Tol.from_dict(v) for k, v in d.get("tol", {}).items()},
+                              "deleted": set(d.get("deleted", [])),
+                              "angles": {k: float(v) for k, v in d.get("angles", {}).items()}}
+            except Exception:
+                pass
+        self._update_edit_buttons()
+
+    def _save_edits(self):
+        key = self._edits_key()
+        if not key:
+            return
+        e = self.edits
+        if not (e["tol"] or e["deleted"] or e["angles"]):
+            self.settings.remove(key)
+            return
+        self.settings.setValue(key, json.dumps({"tol": {k: v.to_dict() for k, v in e["tol"].items()},
+                                                "deleted": sorted(e["deleted"]), "angles": e["angles"]}))
+
+    def _change(self, fn):
+        self.undo_stack.append(copy.deepcopy(self.edits))
+        fn(self.edits)
+        self._save_edits()
+        self._update_edit_buttons()
+        self.rebuild()
+
+    def undo(self):
+        if self.undo_stack:
+            self.edits = self.undo_stack.pop()
+            self._save_edits()
+            self._update_edit_buttons()
+            self.rebuild()
+
+    def _update_edit_buttons(self):
+        n = len(self.edits["deleted"])
+        self.restore_btn.setText(f"Restore deleted dimensions ({n})" if n else "Restore deleted dimensions")
+        self.restore_btn.setEnabled(bool(n))
+        self.clear_tol_btn.setEnabled(bool(self.edits["tol"]))
+
+    def restore_deleted(self):
+        self._change(lambda e: e["deleted"].clear())
+
+    def clear_tolerances(self):
+        self._change(lambda e: e["tol"].clear())
+
+    def delete_dim(self, d):
+        self._change(lambda e: e["deleted"].add(d.key))
+        self.statusBar().showMessage(f"Deleted dimension {d.label}  (Ctrl+Z to undo)", 6000)
+
+    def dim_menu(self, d, gpos):
+        m = QMenu(self)
+        m.addSection(d.label)
+        has_tol = d.key in self.edits["tol"]
+        m.addAction("Edit tolerance…" if has_tol else "Add tolerance…", lambda: self.edit_tolerance(d))
+        if has_tol:
+            m.addAction("Remove tolerance", lambda: self._change(lambda e: e["tol"].pop(d.key, None)))
+        if d.angle is not None:
+            def turn(e):
+                e["angles"][d.key] = (d.angle + 90) % 360
+            m.addAction("Turn leader", lambda: self._change(turn))
+        m.addSeparator()
+        m.addAction("Delete dimension", lambda: self.delete_dim(d))
+        m.exec(gpos)
+
+    def edit_tolerance(self, d):
+        dlg = ToleranceDialog(self, d, self.units_cb.currentData(), self.edits["tol"].get(d.key))
+        if dlg.exec() == QDialog.Accepted:
+            t = dlg.tol()
+            self._change(lambda e: e["tol"].__setitem__(d.key, t))
 
     # --- loading
     def dragEnterEvent(self, e):
@@ -337,6 +591,7 @@ class MainWindow(QMainWindow):
         self.fields["title"].blockSignals(True)
         self.fields["title"].setText(self.path.stem.replace("_", " "))
         self.fields["title"].blockSignals(False)
+        self._load_edits()
         self.reload()
 
     def reload(self):

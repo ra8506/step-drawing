@@ -5,6 +5,10 @@ A Windows desktop app that turns a STEP (`.step` / `.stp`) model into a dimensio
 - **Views:** front, top, side (third-angle or first-angle projection) and isometric, with hidden lines.
 - **Automatic dimensions:** overall size, step and shoulder positions, hole diameters with counts (`4× Ø8`), hole positions from a datum edge, fillet radii, centre marks.
 - **Sheet:** A4–A1 or ANSI A–D with automatic standard scale and an editable title block.
+- **Edit dimensions:** click any dimension to add a tolerance (± symmetric, +/− deviation, or max/min limits),
+  turn a leader, or delete it. Deleted dimensions can be restored, Ctrl+Z undoes, and edits are remembered per file.
+- **Notes:** numbered drawing notes, a general tolerance ("unless otherwise specified"), and a one-click
+  Confidential / Proprietary notice that names the company from the title block.
 - **Export:** PDF, DXF (layers and linetypes for CAD), SVG and PNG.
 
 ## Install

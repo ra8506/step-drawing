@@ -81,3 +81,24 @@ def test_version_compare():
     assert is_newer("0.2.0", "0.1.9")
     assert is_newer("v1.0.0", "0.9.9")
     assert not is_newer("0.1.0", "0.1.0")
+
+
+def test_tolerances_and_deletion():
+    from stepdraw.drawing import Tol
+
+    tols = {"front:overall:h": Tol("sym", 0.05, 0.05), "front:overall:v": Tol("dev", 0.2, 0.1),
+            "top:dia:4.000": Tol("limits", 0.02, 0.01)}
+    sheet, t = labels("plate", tolerances=tols, deleted={"top:pos:h:105.000"})
+    assert "120 ±0.05" in t
+    assert {"+0.2", "-0.1", "4× Ø8.02", "4× Ø7.99"} <= t
+    assert "105" not in t
+    keys = {d.key for d in sheet.dims}
+    assert "top:pos:h:105.000" not in keys and "front:overall:h" in keys
+
+
+def test_notes_and_confidential():
+    _, t = labels("plate", notes="Break sharp edges\n\nDeburr", confidential=True, company="Acme",
+                  general_tol="±0.1")
+    assert {"NOTES:", "1.", "2.", "BREAK SHARP EDGES", "DEBURR", "CONFIDENTIAL · PROPRIETARY"} <= t
+    assert any("ACME" in x for x in t)
+    assert any("TOLERANCES ±0.1" in x for x in t)

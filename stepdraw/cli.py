@@ -21,6 +21,10 @@ def main(argv=None) -> int:
     ap.add_argument("--no-iso", action="store_true")
     ap.add_argument("--y-up", action="store_true", help="model uses Y as the up axis")
     ap.add_argument("--title", default="")
+    ap.add_argument("--company", default="")
+    ap.add_argument("--note", action="append", default=[], help="drawing note; repeatable")
+    ap.add_argument("--confidential", action="store_true", help="add the proprietary / confidential notice")
+    ap.add_argument("--general-tol", default="", help='general tolerance, e.g. "±0.1"')
     a = ap.parse_args(argv)
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -32,7 +36,8 @@ def main(argv=None) -> int:
     shape = load_step(a.step, y_up=a.y_up)
     views = ("front", "top", "right") + (() if a.no_iso else ("iso",))
     opt = Options(sheet=a.sheet, projection=a.projection, units=a.units, hidden_lines=not a.no_hidden,
-                  views=views, title=a.title)
+                  views=views, title=a.title, company=a.company, notes="\n".join(a.note),
+                  confidential=a.confidential, general_tol=a.general_tol)
     sheet = make_drawing(shape, opt, Path(a.step).stem)
     outs = a.out or [str(Path(a.step).with_suffix(".pdf"))]
     for o in outs:

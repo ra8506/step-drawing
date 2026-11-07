@@ -72,9 +72,35 @@ class Sheet:
     entities: list = field(default_factory=list)
     scale_label: str = "1:1"
     notes: list[str] = field(default_factory=list)
+    dims: list["DimRef"] = field(default_factory=list)  # clickable dimensions (for the editor)
+    _footer_entities: list = field(default_factory=list, repr=False)
 
     def add(self, e):
         self.entities.append(e)
+
+
+@dataclass
+class Tol:
+    """Tolerance on one dimension; values in millimetres. kind: sym (±upper) | dev (+upper/-lower) | limits."""
+    kind: str = "sym"
+    upper: float = 0.1
+    lower: float = 0.1
+
+    def to_dict(self):
+        return {"kind": self.kind, "upper": self.upper, "lower": self.lower}
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(d.get("kind", "sym"), float(d.get("upper", 0.1)), float(d.get("lower", 0.1)))
+
+
+@dataclass
+class DimRef:
+    key: str
+    bbox: tuple[float, float, float, float]  # sheet mm
+    value: float  # nominal, mm
+    label: str  # as displayed
+    angle: float | None = None  # leader direction, for diameter / radius callouts
 
 
 @dataclass
@@ -97,6 +123,12 @@ class Options:
     drawn_by: str = ""
     company: str = ""
     revision: str = "A"
+    notes: str = ""  # one note per line
+    confidential: bool = False
+    general_tol: str = ""  # e.g. "±0.1" printed with the "unless otherwise specified" note
+    tolerances: dict = field(default_factory=dict)  # dimension key -> Tol
+    deleted: set = field(default_factory=set)  # dimension keys the user removed
+    leader_angles: dict = field(default_factory=dict)  # dimension key -> leader direction (degrees)
 
 
 # ----------------------------------------------------------------------------- formatting
@@ -109,8 +141,83 @@ def fmt(value_mm: float, opt: Options) -> str:
     return s
 
 
+_CW = {".": 0.278, ",": 0.278, " ": 0.278, "-": 0.333, "1": 0.556, "Ø": 0.778, "×": 0.584, "±": 0.549, "+": 0.584,
+       "I": 0.278, "M": 0.833, "W": 0.944}
+
+
 def text_width(s: str, h: float = TEXT_H) -> float:
-    return 0.6 * h * len(s)
+    """Approximate rendered width (Arial metrics; font size is 1.4 x text height)."""
+    return sum(_CW.get(ch, 0.62 if ch.isupper() else 0.556) for ch in s) * 1.4 * h
+
+
+def dim_text(value_mm: float, opt: Options, key: str, prefix: str = ""):
+    """(main text, upper, lower) for a dimension, applying any tolerance set on `key`."""
+    tol = opt.tolerances.get(key)
+    nominal = prefix + fmt(value_mm, opt)
+    if tol is None:
+        return nominal, None, None
+
+    def t(v, sign):
+        txt = fmt(abs(v), opt) if opt.units == "in" else f"{abs(v):.{max(opt.decimals, 2)}f}".rstrip("0").rstrip(".")
+        return ("+" if sign > 0 else "-") + txt if abs(v) > 1e-12 else "0"
+
+    if tol.kind == "sym":
+        val = fmt(abs(tol.upper), opt) if opt.units == "in" else t(tol.upper, 1)[1:]
+        return f"{nominal} ±{val}", None, None
+    if tol.kind == "dev":
+        return nominal, t(tol.upper, 1), t(-tol.lower, -1)
+    # limits: upper over lower, nominal replaced; show as many decimals as the tolerance needs
+    conv = (lambda v: v / 25.4) if opt.units == "in" else (lambda v: v)
+
+    def ndp(v):
+        txt = f"{conv(abs(v)):.4f}".rstrip("0")
+        return len(txt.split(".")[1]) if "." in txt else 0
+
+    d = max(opt.decimals if opt.units == "mm" else max(opt.decimals, 3), ndp(tol.upper), ndp(tol.lower))
+    hi = prefix + f"{conv(value_mm + tol.upper):.{d}f}"
+    lo = prefix + f"{conv(value_mm - tol.lower):.{d}f}"
+    return None, hi, lo
+
+
+SMALL_H = 2.5
+
+
+def _label(sheet: Sheet, x: float, y: float, text, halign: str = "center", angle: float = 0.0) -> tuple:
+    """Draw a dimension label (main text and/or stacked upper/lower tolerance); returns sheet-mm bbox."""
+    main, up, lo = text
+    small = max(text_width(up or "", SMALL_H), text_width(lo or "", SMALL_H))
+    if main is None:  # limits: two lines of normal size, upper above lower
+        w = max(text_width(up), text_width(lo))
+        parts = [(0.0, TEXT_H * 0.15 + 0.6, up, TEXT_H), (0.0, -TEXT_H * 1.05, lo, TEXT_H)]
+        total = w
+    else:
+        w = text_width(main)
+        parts = [(0.0, 0.0, main, TEXT_H)]
+        total = w
+        if up is not None:
+            parts += [(w + 0.8, TEXT_H * 0.75, up, SMALL_H), (w + 0.8, -1.3, lo, SMALL_H)]
+            total = w + 0.8 + small
+    x0 = {"left": 0.0, "center": -total / 2, "right": -total}[halign]
+    a = math.radians(angle)
+    ca, sa = math.cos(a), math.sin(a)
+    pts = []
+    for dx, dy, txt, h in parts:
+        lx = x0 + dx
+        if main is None:  # centre each limit line within the block
+            lx = x0 + (total - text_width(txt, h)) / 2
+        sheet.add(Text(x + lx * ca - dy * sa, y + lx * sa + dy * ca, txt, h, halign="left", angle=angle))
+        for cx, cy in ((lx, dy), (lx + text_width(txt, h), dy + h * 1.2)):
+            pts.append((x + cx * ca - cy * sa, y + cx * sa + cy * ca))
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _label_width(text) -> float:
+    main, up, lo = text
+    if main is None:
+        return max(text_width(up), text_width(lo))
+    small = max(text_width(up or "", SMALL_H), text_width(lo or "", SMALL_H))
+    return text_width(main) + (0.8 + small if up is not None else 0)
 
 
 # ----------------------------------------------------------------------------- primitives
@@ -123,8 +230,12 @@ def _arrow(sheet: Sheet, tip: Pt, direction: Pt):
     sheet.add(Solid([tip, (bx + px, by + py), (bx - px, by - py)]))
 
 
-def linear_dim(sheet: Sheet, p1: Pt, p2: Pt, orient: str, at: float, label: str):
-    """Horizontal (orient='h', dimension line at y=`at`) or vertical (orient='v', x=`at`) dimension."""
+def linear_dim(sheet: Sheet, p1: Pt, p2: Pt, orient: str, at: float, text, key: str = "", value: float = 0.0):
+    """Horizontal (orient='h', dimension line at y=`at`) or vertical (orient='v', x=`at`) dimension.
+
+    `text` is a plain string or the (main, upper, lower) tuple from `dim_text`."""
+    if isinstance(text, str):
+        text = (text, None, None)
     if orient == "h":
         a, b = (p1[0], at), (p2[0], at)
         for p in (p1, p2):
@@ -139,7 +250,7 @@ def linear_dim(sheet: Sheet, p1: Pt, p2: Pt, orient: str, at: float, label: str)
     if length < 1e-6:
         return
     d = ((b[0] - a[0]) / length, (b[1] - a[1]) / length)
-    tw = text_width(label)
+    tw = _label_width(text)
     if length >= 2 * ARROW_L + 1:
         sheet.add(Polyline([a, b], "DIM"))
         _arrow(sheet, a, (-d[0], -d[1]))
@@ -150,25 +261,36 @@ def linear_dim(sheet: Sheet, p1: Pt, p2: Pt, orient: str, at: float, label: str)
         _arrow(sheet, a, d)
         _arrow(sheet, b, (-d[0], -d[1]))
     mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    lift = 1.0 + (TEXT_H * 1.05 if text[0] is None else 0.0) + (1.3 if text[1] and text[0] else 0.0)
     if orient == "h":
-        x = mid[0] if length > tw + 2 else b[0] + ARROW_L + 2 + tw / 2
-        sheet.add(Text(x, mid[1] + 1.0, label))
+        x = mid[0] if length > tw + 2 else max(a[0], b[0]) + ARROW_L + 2 + tw / 2
+        box = _label(sheet, x, mid[1] + lift, text)
     else:
-        y = mid[1] if length > tw + 2 else b[1] + ARROW_L + 2 + tw / 2
-        sheet.add(Text(mid[0] - 1.0, y, label, angle=90.0))
+        y = mid[1] if length > tw + 2 else max(a[1], b[1]) + ARROW_L + 2 + tw / 2
+        box = _label(sheet, mid[0] - lift, y, text, angle=90.0)
+    if key:
+        lo = (min(a[0], b[0], box[0]), min(a[1], b[1], box[1]), max(a[0], b[0], box[2]), max(a[1], b[1], box[3]))
+        sheet.dims.append(DimRef(key, lo, value, " ".join(t for t in text if t)))
 
 
-def leader(sheet: Sheet, cx: float, cy: float, r: float, angle_deg: float, label: str, length: float = 12.0):
+def leader(sheet: Sheet, cx: float, cy: float, r: float, angle_deg: float, text, length: float = 12.0,
+           key: str = "", value: float = 0.0):
     """Leader from a circle's edge outwards to a horizontal shoulder with the label."""
+    if isinstance(text, str):
+        text = (text, None, None)
     t = math.radians(angle_deg)
     tip = (cx + r * math.cos(t), cy + r * math.sin(t))
     knee = (cx + (r + length) * math.cos(t), cy + (r + length) * math.sin(t))
     right = math.cos(t) >= 0
-    tw = text_width(label)
+    tw = _label_width(text)
     end = (knee[0] + (tw + 2 if right else -(tw + 2)), knee[1])
     sheet.add(Polyline([tip, knee, end], "DIM"))
     _arrow(sheet, tip, (tip[0] - knee[0], tip[1] - knee[1]))
-    sheet.add(Text(knee[0] + (1 if right else -1), knee[1] + 0.8, label, halign="left" if right else "right"))
+    lift = 0.8 + (TEXT_H * 1.05 if text[0] is None else 0.0) + (1.3 if text[1] and text[0] else 0.0)
+    box = _label(sheet, knee[0] + (1 if right else -1), knee[1] + lift, text, halign="left" if right else "right")
+    if key:
+        bb = (min(box[0], knee[0], end[0]), min(box[1], knee[1]), max(box[2], knee[0], end[0]), max(box[3], knee[1]))
+        sheet.dims.append(DimRef(key, bb, value, " ".join(x for x in text if x)))
 
 
 def center_mark(sheet: Sheet, cx: float, cy: float, r: float):
@@ -272,16 +394,16 @@ def _plan_views(views: dict[str, View2D], opt: Options) -> dict[str, _Plan]:
                     continue
                 seen_d.add(r)
                 n_holes = len({(round(c.cx, 3), round(c.cy, 3)) for c in cs})
-                label = ("%d× " % n_holes if n_holes > 1 else "") + "Ø" + fmt(2 * r, opt)
+                prefix = ("%d× " % n_holes if n_holes > 1 else "") + "Ø"
                 rep = max(cs, key=lambda c: (c.cx + c.cy))  # top/right-most for a clean leader
-                p.leaders.append((rep, label))
+                p.leaders.append((rep, prefix, 2 * r, f"dia:{r:.3f}"))
         if opt.radius_dims:
             for c in sorted(arcs, key=lambda c: -c.r):
                 r = round(c.r, 3)
                 if r in seen_r or r in seen_d:
                     continue
                 seen_r.add(r)
-                p.leaders.append((c, "R" + fmt(c.r, opt)))
+                p.leaders.append((c, "R", c.r, f"rad:{r:.3f}"))
                 if len(seen_r) >= 6:
                     break
         if opt.hole_positions:
@@ -334,7 +456,8 @@ def build_sheet(views: dict[str, View2D], opt: Options, source_name: str = "") -
     grid = _grid(opt, plans)
 
     # area for views: inside border, above title block
-    ax0, ay0, ax1, ay1 = margin + 4, margin + tb_h + 4, W - margin - 4, H - margin - 4
+    footer = _footer(opt, W, margin, tb_h, sheet)
+    ax0, ay0, ax1, ay1 = margin + 4, margin + footer + 4, W - margin - 4, H - margin - 4 - (7 if opt.confidential else 0)
 
     cols = {0: [], 1: []}
     rows = {0: [], 1: []}
@@ -413,20 +536,30 @@ def _draw_view(sheet: Sheet, p: _Plan, ox: float, oy: float, s: float, opt: Opti
                 cx, cy = T((c.cx, c.cy))
                 center_mark(sheet, cx, cy, c.r * s)
 
+    vn = p.view.name
+
+    def dim(key, p1, p2, orient, at, value):
+        key = f"{vn}:{key}"
+        if key not in opt.deleted:
+            linear_dim(sheet, p1, p2, orient, at, dim_text(value, opt, key), key, value)
+
     if p.overall_h:
-        linear_dim(sheet, (L, B), (R, B), "h", B - FIRST_DIM, fmt(x1 - x0, opt))
+        dim("overall:h", (L, B), (R, B), "h", B - FIRST_DIM, x1 - x0)
     if p.overall_v:
-        linear_dim(sheet, (L, B), (L, Tp), "v", L - FIRST_DIM, fmt(y1 - y0, opt))
-    # hole positions: baseline (datum = left / bottom edge), stacked above / to the right
+        dim("overall:v", (L, B), (L, Tp), "v", L - FIRST_DIM, y1 - y0)
+    # feature positions: baseline (datum = left / bottom edge), stacked above / to the right
     for i, x in enumerate(p.pos_x):
         cx, _ = T((x, y0))
-        linear_dim(sheet, (L, Tp), (cx, Tp), "h", Tp + FIRST_DIM + i * DIM_STEP, fmt(x - x0, opt))
+        dim(f"pos:h:{x - x0:.3f}", (L, Tp), (cx, Tp), "h", Tp + FIRST_DIM + i * DIM_STEP, x - x0)
     for i, y in enumerate(p.pos_y):
         _, cy = T((x0, y))
-        linear_dim(sheet, (R, B), (R, cy), "v", R + FIRST_DIM + i * DIM_STEP, fmt(y - y0, opt))
+        dim(f"pos:v:{y - y0:.3f}", (R, B), (R, cy), "v", R + FIRST_DIM + i * DIM_STEP, y - y0)
 
     angles = [45, 135, 30, 150, 60, 120, 20, 160]
-    for i, (c, label) in enumerate(p.leaders):
+    for i, (c, prefix, value, kind) in enumerate(p.leaders):
+        key = f"{vn}:{kind}"
+        if key in opt.deleted:
+            continue
         cx, cy = T((c.cx, c.cy))
         mx, my = (L + R) / 2, (B + Tp) / 2
         if math.hypot(cx - mx, cy - my) > 1.0:  # point the leader away from the middle of the view
@@ -446,7 +579,24 @@ def _draw_view(sheet: Sheet, p: _Plan, ox: float, oy: float, s: float, opt: Opti
                         length = base
                     break
                 length += 2
-        leader(sheet, cx, cy, c.r * s, ang, label, length=length)
+        text = dim_text(value, opt, key, prefix)
+        tw = _label_width(text) + 3
+
+        def label_span(a):
+            t = math.radians(a)
+            kx = cx + (c.r * s + length) * math.cos(t)
+            return (kx, kx + tw) if math.cos(t) >= 0 else (kx - tw, kx)
+
+        lo_x, hi_x = label_span(ang)
+        if key in opt.leader_angles:  # the user picked a direction
+            ang = opt.leader_angles[key]
+        elif hi_x > R + 1 and p.pos_y:  # would run into the position dimensions on the right: mirror it
+            alt = (180 - ang) % 360
+            if not (label_span(alt)[0] < L - 1 and p.overall_v):
+                ang = alt
+        leader(sheet, cx, cy, c.r * s, ang, text, length=length, key=key, value=value)
+        if sheet.dims and sheet.dims[-1].key == key:
+            sheet.dims[-1].angle = ang
 
     sheet.add(Text((L + R) / 2, B - (FIRST_DIM + 8 if p.overall_h else 6), p.view.name.upper() + " VIEW", 3.0, "TITLE", valign="top"))
 
@@ -481,8 +631,80 @@ def _border_and_title(sheet: Sheet, opt: Options, m: float, tb_h: float, source_
     proj = "THIRD ANGLE PROJECTION" if opt.projection == "third" else "FIRST ANGLE PROJECTION"
     note = proj + (f"   MATERIAL: {opt.material.upper()}" if opt.material else "")
     sheet.add(Text(x0, y0 + tb_h + 2, note, 2.5, "TITLE", "left", "bottom"))
-    sheet.add(Text(m + 3, m + 3, "UNLESS OTHERWISE SPECIFIED DIMENSIONS ARE IN "
-                   + ("MILLIMETRES" if opt.units == "mm" else "INCHES"), 2.5, "TITLE", "left", "bottom"))
+    for e in sheet._footer_entities:
+        sheet.add(e)
+
+
+CONF_H = 2.2
+NOTE_H = 2.5
+
+
+def _wrap(text: str, width: float, h: float) -> list[str]:
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        cand = (cur + " " + w).strip()
+        if cur and text_width(cand, h) > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _footer(opt: Options, W: float, m: float, tb_h: float, sheet: Sheet) -> float:
+    """Lay out notes (bottom left) and the proprietary notice (above the title block).
+
+    Entities are stashed on the sheet and added after the border; returns the height the views must clear."""
+    ents: list = []
+    H = sheet.height
+    # bottom-left: general note, then numbered notes stacked above it
+    units = "MILLIMETRES" if opt.units == "mm" else "INCHES"
+    general = f"UNLESS OTHERWISE SPECIFIED: DIMENSIONS ARE IN {units}"
+    if opt.general_tol.strip():
+        general += f"; TOLERANCES {opt.general_tol.strip().upper()}"
+    left_w = W - 2 * m - 180 - 10
+    y = m + 3
+    for line in reversed(_wrap(general, left_w, NOTE_H)):
+        ents.append(Text(m + 3, y, line, NOTE_H, "TITLE", "left", "bottom"))
+        y += NOTE_H * 1.6
+    notes = [n.strip() for n in (opt.notes or "").splitlines() if n.strip()]
+    if notes:
+        block: list[str] = []
+        for i, n in enumerate(notes, 1):
+            wrapped = _wrap(n.upper(), left_w - 6, NOTE_H)
+            block.append(f"{i}.\t" + wrapped[0])
+            block += ["\t" + w for w in wrapped[1:]]
+        y += 2
+        for line in reversed(block):
+            num, _, txt = line.partition("\t")
+            if num:
+                ents.append(Text(m + 3, y, num, NOTE_H, "TITLE", "left", "bottom"))
+            ents.append(Text(m + 9, y, txt, NOTE_H, "TITLE", "left", "bottom"))
+            y += NOTE_H * 1.6
+        ents.append(Text(m + 3, y + 1, "NOTES:", 3.0, "TITLE", "left", "bottom"))
+        y += 3.0 * 1.6 + 1
+    left_h = y - m
+
+    right_h = tb_h + 2 + 4
+    if opt.confidential:
+        who = (opt.company or "").strip().upper() or "THE OWNER"
+        stmt = ("PROPRIETARY AND CONFIDENTIAL. THE INFORMATION CONTAINED IN THIS DRAWING IS THE SOLE PROPERTY OF "
+                f"{who}. ANY REPRODUCTION IN PART OR AS A WHOLE WITHOUT THE WRITTEN PERMISSION OF {who} IS PROHIBITED.")
+        lines = _wrap(stmt, 180 - 4, CONF_H)
+        bx0, bx1 = W - m - 180, W - m
+        by0 = m + right_h + 1
+        by1 = by0 + len(lines) * CONF_H * 1.5 + 2
+        ents.append(Polyline([(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)], "TITLE", closed=True))
+        ty = by1 - 1.2
+        for line in lines:
+            ents.append(Text(bx0 + 2, ty, line, CONF_H, "TITLE", "left", "top"))
+            ty -= CONF_H * 1.5
+        right_h = by1 - m + 1
+        ents.append(Text(m + 4, H - m - 3, "CONFIDENTIAL · PROPRIETARY", 4.0, "TITLE", "left", "top"))
+    sheet._footer_entities = ents
+    return max(left_h, right_h)
 
 
 def make_drawing(shape, opt: Options, source_name: str = "", progress=None) -> Sheet:
