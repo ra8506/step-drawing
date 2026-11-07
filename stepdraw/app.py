@@ -5,8 +5,8 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QSettings, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter
+from PySide6.QtCore import QObject, QPointF, QSettings, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFormLayout, QGroupBox,
     QLineEdit, QMainWindow, QMessageBox, QProgressDialog, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
@@ -466,8 +466,17 @@ class MainWindow(QMainWindow):
                 self.install_update(rel)
 
         def fail(msg):
-            if not silent:
-                QMessageBox.warning(self, APP_NAME, f"Could not check for updates:\n{msg}")
+            if silent:
+                return
+            box = QMessageBox(self)
+            box.setWindowTitle(APP_NAME)
+            box.setIcon(QMessageBox.Information)
+            box.setText(f"You have version {__version__}. The app couldn't check for a newer one automatically.")
+            box.setInformativeText("Open the releases page on GitHub (sign in if asked) and run the latest Setup.exe "
+                                   "to update. Your settings are kept.")
+            box.setStandardButtons(QMessageBox.Open | QMessageBox.Close)
+            if box.exec() == QMessageBox.Open:
+                QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE))
 
         run_in_thread(self, work, done, fail)
 

@@ -18,6 +18,11 @@ from dataclasses import dataclass
 from . import GITHUB_REPO, __version__
 
 API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+
+
+class ReleasesNotPublic(Exception):
+    """The repository is private, so releases can't be read without signing in."""
 
 
 @dataclass
@@ -38,8 +43,15 @@ def is_newer(remote: str, local: str = __version__) -> bool:
 
 def latest_release(timeout: float = 8.0) -> Release | None:
     req = urllib.request.Request(API, headers={"User-Agent": "STEP-Drawing-Updater", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.loads(r.read().decode("utf-8"))
+    import urllib.error
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:  # private repo (or no release yet)
+            raise ReleasesNotPublic() from e
+        raise
     for a in data.get("assets", []):
         if a["name"].lower().endswith("setup.exe"):
             return Release(data["tag_name"].lstrip("v"), data.get("body") or "", a["browser_download_url"], data.get("html_url", ""))

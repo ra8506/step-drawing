@@ -16,8 +16,9 @@ Windows SmartScreen may warn the first time because the installer isn't code-sig
 
 ## Updates
 
-On startup the app checks GitHub for a newer release. If one exists, click **Update now** and it downloads the new installer,
-installs it silently and restarts. You can also use **Help → Check for updates**, or turn the startup check off in the Help menu.
+The app checks GitHub for a newer release on startup and offers **Update now**, which installs it silently and restarts.
+That automatic check only works while the repository is public. While it's private, use **Help → Check for updates**:
+it opens the releases page (sign in to GitHub), and you run the newest `Setup.exe` over the top. Settings are kept.
 
 ## Use
 
