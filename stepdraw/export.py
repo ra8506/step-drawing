@@ -5,7 +5,7 @@ import math
 from html import escape
 from pathlib import Path
 
-from .drawing import Polyline, Sheet, Solid, Text
+from .drawing import Polyline, Sheet, Solid, Text, text_width
 
 STYLE = {  # layer: (stroke width mm, dash pattern mm or None, colour)
     "VISIBLE": (0.5, None, "#000000"),
@@ -47,9 +47,12 @@ def to_svg(sheet: Sheet) -> str:
             base = {"bottom": "auto", "middle": "central", "top": "hanging"}[e.valign]
             x, y = e.x, fy(e.y)
             rot = f' transform="rotate({-e.angle:.3f} {x:.3f} {y:.3f})"' if e.angle else ""
+            fit = ""
+            if e.max_width and text_width(e.text, e.height) > e.max_width:
+                fit = f' textLength="{e.max_width:.3f}" lengthAdjust="spacingAndGlyphs"'
             out.append(
                 f'<text x="{x:.3f}" y="{y:.3f}" font-size="{e.height * 1.4:.3f}" text-anchor="{anchor}" '
-                f'dominant-baseline="{base}"{rot}>{escape(e.text)}</text>'
+                f'dominant-baseline="{base}"{rot}{fit}>{escape(e.text)}</text>'
             )
     out.append("</g></svg>")
     return "\n".join(out)
@@ -98,7 +101,12 @@ def save_dxf(sheet: Sheet, path: str | Path):
             hatch = msp.add_hatch(color=7, dxfattribs={"layer": "DIM"})
             hatch.paths.add_polyline_path(e.pts, is_closed=True)
         elif isinstance(e, Text):
-            t = msp.add_text(e.text, height=e.height, rotation=e.angle, dxfattribs={"layer": e.layer, "style": "OpenSans"})
+            attrs = {"layer": e.layer, "style": "OpenSans"}
+            if e.max_width:
+                w = text_width(e.text, e.height)
+                if w > e.max_width:
+                    attrs["width"] = e.max_width / w
+            t = msp.add_text(e.text, height=e.height, rotation=e.angle, dxfattribs=attrs)
             t.set_placement((e.x, e.y), align=align[(e.halign, e.valign)])
     doc.saveas(str(path))
 
@@ -156,6 +164,8 @@ def paint(sheet: Sheet, painter, px_per_mm: float):
             painter.translate(P(e.x, e.y))
             if e.angle:
                 painter.rotate(-e.angle)
+            if e.max_width and w > e.max_width * k:  # squeeze to fit its box
+                painter.scale(e.max_width * k / w, 1.0)
             painter.drawText(QPointF(dx, dy), e.text)
             painter.restore()
 

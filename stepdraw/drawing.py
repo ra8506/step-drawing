@@ -57,6 +57,7 @@ class Text:
     halign: str = "center"  # left | center | right
     valign: str = "bottom"  # bottom | middle | top
     angle: float = 0.0  # degrees, counter-clockwise
+    max_width: float = 0.0  # if > 0, squeeze the text horizontally to fit this width (mm)
 
 
 @dataclass
@@ -145,9 +146,32 @@ _CW = {".": 0.278, ",": 0.278, " ": 0.278, "-": 0.333, "1": 0.556, "Ø": 0.778, 
        "I": 0.278, "M": 0.833, "W": 0.944}
 
 
+_QFM = None
+
+
+def _qt_metrics():
+    """Real font metrics when a Qt application is running (the GUI and CLI both create one)."""
+    global _QFM
+    if _QFM is None:
+        try:
+            from PySide6.QtGui import QFont, QFontMetricsF, QGuiApplication
+
+            if QGuiApplication.instance() is None:
+                return None
+            f = QFont("Arial")
+            f.setPixelSize(100)
+            _QFM = QFontMetricsF(f)
+        except Exception:
+            return None
+    return _QFM
+
+
 def text_width(s: str, h: float = TEXT_H) -> float:
-    """Approximate rendered width (Arial metrics; font size is 1.4 x text height)."""
-    return sum(_CW.get(ch, 0.62 if ch.isupper() else 0.556) for ch in s) * 1.4 * h
+    """Rendered width in mm of text of height `h` (font size is 1.4 x text height)."""
+    fm = _qt_metrics()
+    if fm is not None:
+        return fm.horizontalAdvance(s) / 100.0 * 1.4 * h
+    return sum(_CW.get(ch, 0.68 if ch.isupper() else 0.556) for ch in s) * 1.4 * h
 
 
 def dim_text(value_mm: float, opt: Options, key: str, prefix: str = ""):
@@ -692,14 +716,14 @@ def _footer(opt: Options, W: float, m: float, tb_h: float, sheet: Sheet) -> floa
         who = (opt.company or "").strip().upper() or "THE OWNER"
         stmt = ("PROPRIETARY AND CONFIDENTIAL. THE INFORMATION CONTAINED IN THIS DRAWING IS THE SOLE PROPERTY OF "
                 f"{who}. ANY REPRODUCTION IN PART OR AS A WHOLE WITHOUT THE WRITTEN PERMISSION OF {who} IS PROHIBITED.")
-        lines = _wrap(stmt, 180 - 4, CONF_H)
+        lines = _wrap(stmt, 180 - 8, CONF_H)
         bx0, bx1 = W - m - 180, W - m
         by0 = m + right_h + 1
         by1 = by0 + len(lines) * CONF_H * 1.5 + 2
         ents.append(Polyline([(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)], "TITLE", closed=True))
         ty = by1 - 1.2
         for line in lines:
-            ents.append(Text(bx0 + 2, ty, line, CONF_H, "TITLE", "left", "top"))
+            ents.append(Text(bx0 + 2, ty, line, CONF_H, "TITLE", "left", "top", max_width=180 - 4))
             ty -= CONF_H * 1.5
         right_h = by1 - m + 1
         ents.append(Text(m + 4, H - m - 3, "CONFIDENTIAL · PROPRIETARY", 4.0, "TITLE", "left", "top"))

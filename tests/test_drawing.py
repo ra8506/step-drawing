@@ -116,3 +116,16 @@ def test_worker_processes():
         assert len([c for c in exact.circles if c.full]) == 5
     finally:
         eng.stop()
+
+
+@pytest.mark.parametrize("sheet_size", ["A4", "A3", "ANSI B"])
+def test_confidential_notice_fits_its_box(sheet_size):
+    from stepdraw.drawing import Polyline, text_width
+
+    sheet, _ = labels("plate", confidential=True, sheet=sheet_size, company="A Very Long Company Name Incorporated")
+    lines = [e for e in sheet.entities if isinstance(e, Text) and e.max_width]
+    box = [e for e in sheet.entities if isinstance(e, Polyline) and e.closed and e.layer == "TITLE"][0]
+    right = max(p[0] for p in box.pts)
+    assert lines
+    for t in lines:
+        assert t.x + min(text_width(t.text, t.height), t.max_width) <= right - 1.0
