@@ -42,14 +42,17 @@ jobs:
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
           "C:\Program Files (x86)\Inno Setup 6" | Out-File -Append $env:GITHUB_PATH
       - name: Build
+        timeout-minutes: 30
         shell: pwsh
         run: .\packaging\build_windows.ps1
       - name: Test installer (silent install, then run installed app headless)
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $setup = (Get-ChildItem dist\*Setup.exe)[0].FullName
-          Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
-          Get-Process | Where-Object { $_.Path -like "*STEP Drawing*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/NOLAUNCH" -PassThru
+          if (-not $p.WaitForExit(300000)) { throw "installer timed out" }
+          if ($p.ExitCode -ne 0) { throw "installer exit code $($p.ExitCode)" }
           $dir = "$env:LOCALAPPDATA\Programs\STEP Drawing"
           $env:QT_QPA_PLATFORM = "offscreen"
           & "$dir\python\python.exe" -m stepdraw --cli "$dir\samples\plate.step" -o "$env:RUNNER_TEMP\installed.pdf"

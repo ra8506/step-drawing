@@ -57,4 +57,16 @@ Root: HKCU; Subkey: "Software\Classes\.stp\OpenWithProgids"; ValueType: string; 
 
 [Run]
 ; Runs after both normal installs (as a checkbox) and silent in-app updates (relaunch).
-Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall
+Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall; Check: not HasParam('/NOLAUNCH')
+
+[Code]
+// /NOLAUNCH skips starting the app after install (used by automated tests).
+function HasParam(const Name: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), Name) = 0 then
+      Result := True;
+end;
