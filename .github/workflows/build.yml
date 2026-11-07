@@ -20,7 +20,7 @@ jobs:
           python-version: "3.13"
       - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
       - run: pip install -r requirements.txt pytest
-      - run: QT_QPA_PLATFORM=offscreen pytest -q
+      - run: QT_QPA_PLATFORM=offscreen python -m pytest -q
 
   windows:
     needs: test
