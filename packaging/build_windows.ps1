@@ -43,6 +43,11 @@ if ($LASTEXITCODE -ne 0) { throw "launcher build failed" }
 $env:QT_QPA_PLATFORM = "offscreen"
 & "$py\python.exe" -m stepdraw --cli "$app\samples\bracket.step" -o build\smoke.pdf -o build\smoke.dxf -o build\smoke.svg
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path build\smoke.pdf)) { throw "smoke test failed" }
+# Worker processes (spawned from both python.exe and the windowless pythonw.exe the app runs under)
+& "$py\python.exe" -m stepdraw --selftest "$app\samples\plate.step"
+if ($LASTEXITCODE -ne 0) { throw "worker self-test failed (python.exe)" }
+$p = Start-Process "$py\pythonw.exe" -ArgumentList "-m","stepdraw","--selftest","`"$app\samples\plate.step`"" -PassThru -Wait
+if ($p.ExitCode -ne 0) { throw "worker self-test failed (pythonw.exe): $($p.ExitCode)" }
 
 # 5. Installer
 iscc /Q "/DAppVersion=$version" "/DSourceDir=..\$app" packaging\installer.iss

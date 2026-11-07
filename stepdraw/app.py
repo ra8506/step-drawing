@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, QPointF, QSettings, Qt, QThread, QTimer, QUr
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGroupBox, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
+    QFormLayout, QGroupBox, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog,
     QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -55,6 +55,11 @@ def run_in_thread(owner, fn, on_done, on_fail, on_progress=None):
     th.finished.connect(th.deleteLater)
     owner._workers = getattr(owner, "_workers", []) + [(th, w)]
     th.start()
+
+
+class _Bridge(QObject):
+    """Carries worker-process results back onto the GUI thread."""
+    done = Signal(object, object)  # tag, future
 
 
 # ----------------------------------------------------------------------------- preview
@@ -244,7 +249,14 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
         self.setAcceptDrops(True)
         self.settings = QSettings("STEP Drawing", "STEP Drawing")
-        self.shape = None
+        self.engine = None
+        self.gen = 0
+        self.fast: dict = {}
+        self.pending: set = set()
+        self.info_text = f"{APP_NAME} {__version__}"
+        self._reset_view = False
+        self.bridge = _Bridge()
+        self.bridge.done.connect(self._on_result)
         self.path: Path | None = None
         self.cache: dict = {}
         self.sheet = None
@@ -259,6 +271,15 @@ class MainWindow(QMainWindow):
         self._build_panel()
         self._load_settings()
         self.statusBar().showMessage(f"{APP_NAME} {__version__}")
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(180)
+        self.progress.setTextVisible(False)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.cancel_work)
+        self.statusBar().addPermanentWidget(self.progress)
+        self.statusBar().addPermanentWidget(self.cancel_btn)
+        self.progress.hide()
+        self.cancel_btn.hide()
         self._rebuild_timer = QTimer(self, singleShot=True, interval=150, timeout=self.rebuild)
         if self.settings.value("auto_update", True, type=bool):
             QTimer.singleShot(2500, lambda: self.check_updates(silent=True))
@@ -299,6 +320,7 @@ class MainWindow(QMainWindow):
         act("Undo dimension change", self.undo, "Ctrl+Z", menu=em, toolbar=False)
 
         vm = m.addMenu("&View")
+        act("Reload part", self.reload, "F5", menu=vm, toolbar=False)
         act("Fit to window", lambda: self.view.mouseDoubleClickEvent(None), "Ctrl+0", menu=vm, toolbar=False)
 
         hm = m.addMenu("&Help")
@@ -460,6 +482,7 @@ class MainWindow(QMainWindow):
         self._save_edits()
 
     def closeEvent(self, e):
+        self._stop_engine()
         self._save_settings()
         super().closeEvent(e)
 
@@ -595,87 +618,147 @@ class MainWindow(QMainWindow):
         self.reload()
 
     def reload(self):
+        """(Re)open the current file: heavy work runs in worker processes so the window never freezes."""
         if not self.path:
             return
-        from .geometry import load_step, shape_info
+        from .worker import Engine
 
-        path, yup = self.path, self.yup_cb.isChecked()
-        self.view.message = f"Loading {path.name}…"
+        self._stop_engine()
+        self.gen += 1
+        path = self.path
+        self.engine = Engine(path, self.yup_cb.isChecked())
+        self.cache.clear()
+        self.fast.clear()
+        self.pending.clear()
+        self.sheet = None
+        self._reset_view = True
+        for a in self.export_actions:
+            a.setEnabled(False)
+        self.view.message = f"Reading {path.name}…"
         self.view.set_sheet(None)
-        self.statusBar().showMessage(f"Loading {path.name}…")
+        self.setWindowTitle(f"{path.name} – {APP_NAME}")
+        self._set_busy(f"Reading {path.name}…")
+        self._watch(self.engine.info(), ("info", self.gen, None))
+        self.rebuild()
 
-        def work(progress):
-            shape = load_step(path, y_up=yup)
-            return shape, shape_info(shape)
+    def _stop_engine(self):
+        if self.engine is not None:
+            self.engine.stop()
+            self.engine = None
 
-        def done(res):
-            self.shape, info = res
-            self.cache.clear()
-            sx, sy, sz = info["size"]
-            self.statusBar().showMessage(
-                f"{path.name}  ·  {info['solids']} solid(s)  ·  {sx:.1f} × {sy:.1f} × {sz:.1f} mm")
-            self.setWindowTitle(f"{path.name} – {APP_NAME}")
-            self.rebuild(reset_view=True)
+    def _watch(self, fut, tag):
+        fut.add_done_callback(lambda f: self.bridge.done.emit(tag, f))
 
-        run_in_thread(self, work, done, self._fail)
+    def _on_result(self, tag, fut):
+        kind, gen, key = tag
+        if gen != self.gen or fut.cancelled():
+            return
+        self.pending.discard((kind, key))
+        try:
+            res = fut.result()
+        except Exception as e:  # worker error or killed process
+            if self.engine is None:
+                return
+            self._stop_engine()
+            self._fail(f"Could not process this file:\n{e}" if str(e) else "Could not process this file.")
+            return
+        if kind == "info":
+            sx, sy, sz = res["size"]
+            self.info_text = (f"{self.path.name}  ·  {res['solids']} solid(s)  ·  "
+                              f"{sx:.1f} × {sy:.1f} × {sz:.1f} mm")
+            self.view.message = f"Projecting views of {self.path.name}…"
+            self.view.update()
+        elif kind == "fast":
+            self.fast[key] = res
+        else:
+            self.cache[key] = res
+        self.rebuild()
 
     def _fail(self, msg):
+        self._set_busy(None)
         self.view.message = "Could not open this file."
         self.view.set_sheet(None)
         self.statusBar().showMessage("Error")
         QMessageBox.critical(self, APP_NAME, msg)
 
+    def cancel_work(self):
+        self._stop_engine()
+        self.gen += 1
+        self._set_busy(None)
+        if self.sheet is None:
+            self.view.message = "Cancelled."
+            self.view.set_sheet(None)
+        self.statusBar().showMessage("Cancelled. Showing the quick preview without dimensions. "
+                                     "Press F5 to try again.", 15000)
+
+    def _set_busy(self, text, done=0, total=0):
+        if text is None:
+            self.progress.hide()
+            self.cancel_btn.hide()
+            self.statusBar().showMessage(self.info_text)
+            return
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress.show()
+        self.cancel_btn.show()
+        self.statusBar().showMessage(text)
+
     # --- drawing
     def schedule_rebuild(self, *_):
-        if self.shape is not None:
+        if self.engine is not None:
             self._rebuild_timer.start()
 
-    def rebuild(self, reset_view=False):
-        if self.shape is None:
-            return
-        from .geometry import project
+    def _view_keys(self, opt):
+        out = []
+        for n in opt.views:
+            src = "left" if (n == "right" and opt.projection == "first") else n
+            out.append((n, (src, opt.hidden_lines)))
+        return out
 
+    def rebuild(self, reset_view=False):
+        if self.engine is None:
+            return
         opt = self.options()
         if not opt.views:
             self.view.set_sheet(None)
             return
-        needed = []
-        for n in opt.views:
-            src = "left" if (n == "right" and opt.projection == "first") else n
-            key = (src, opt.hidden_lines)
-            if key not in self.cache:
-                needed.append((n, key))
+        keys = self._view_keys(opt)
+        missing = [k for _, k in keys if k not in self.cache]
+        # quick previews first (they finish in a fraction of a second), then the exact views
+        for k in missing:
+            if k not in self.fast and ("fast", k) not in self.pending:
+                self.pending.add(("fast", k))
+                self._watch(self.engine.project(k[0], k[1], fast=True), ("fast", self.gen, k))
+        for k in missing:
+            if ("exact", k) not in self.pending:
+                self.pending.add(("exact", k))
+                self._watch(self.engine.project(k[0], k[1]), ("exact", self.gen, k))
 
-        def finish():
-            views = {}
-            for n in opt.views:
-                src = "left" if (n == "right" and opt.projection == "first") else n
-                views[n] = self.cache[(src, opt.hidden_lines)]
-            self.sheet = build_sheet(views, opt, self.path.stem if self.path else "")
-            self.view.set_sheet(self.sheet, reset=reset_view)
+        reset = reset_view or self._reset_view
+        name = self.path.stem if self.path else ""
+        if not missing:
+            self.sheet = build_sheet({n: self.cache[k] for n, k in keys}, opt, name)
+            self.view.set_sheet(self.sheet, reset=reset)
+            self._reset_view = False
             for a in self.export_actions:
                 a.setEnabled(True)
-
-        if not needed:
-            finish()
+            self._set_busy(None)
             return
-
-        shape = self.shape
-        self.statusBar().showMessage("Projecting views…")
-
-        def work(progress):
-            out = {}
-            for n, (src, hidden) in needed:
-                progress(f"Projecting {n} view…")
-                out[(src, hidden)] = project(shape, src, with_hidden=hidden)
-            return out
-
-        def done(res):
-            self.cache.update(res)
-            self.statusBar().clearMessage()
-            finish()
-
-        run_in_thread(self, work, done, self._fail, lambda m: self.statusBar().showMessage(m))
+        if all(k in self.cache or k in self.fast for _, k in keys):
+            preview = copy.copy(opt)
+            for f in ("overall_dims", "hole_dims", "hole_positions", "radius_dims", "center_marks"):
+                setattr(preview, f, False)
+            views = {n: self.cache.get(k) or self.fast[k] for n, k in keys}
+            self.sheet = build_sheet(views, preview, name)
+            self.sheet.dims = []  # not editable until the exact views are in
+            self.view.set_sheet(self.sheet, reset=reset)
+            self._reset_view = False
+            for a in self.export_actions:
+                a.setEnabled(False)
+        done = len(keys) - len(missing)
+        msg = (f"Preview shown. Working out exact views and dimensions ({done}/{len(keys)})…" if self.sheet
+               else f"Reading {self.path.name if self.path else 'part'}…")
+        self._set_busy(msg, done, len(keys))
 
     # --- export
     def export_dialog(self, ext):

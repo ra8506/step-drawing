@@ -226,3 +226,32 @@ def _drop_covered(hidden: list[list[Pt]], visible: list[list[Pt]], tol: float) -
         if not all(covered(p) for p in samples):
             out.append(pl)
     return out
+
+
+def project_fast(shape: TopoDS_Shape, name: str, with_hidden: bool = False) -> View2D:
+    """Quick mesh-based projection (HLRBRep_PolyAlgo) for an instant preview.
+
+    Much faster than exact HLR on big parts, but curves become polylines, so no holes/arcs are detected."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
+
+    info = shape_info(shape)
+    size = max(info["size"]) or 1.0
+    BRepMesh_IncrementalMesh(shape, size / 300.0, False, 0.5, True)
+    algo = HLRBRep_PolyAlgo(shape)
+    algo.Projector(_projector(name))
+    algo.Update()
+    hlr = HLRBRep_PolyHLRToShape()
+    hlr.Update(algo)
+    view = View2D(name)
+    (dx, dy, dz), (xx, xy, xz) = VIEW_DIRS[name]
+    view.u_axis = (float(xx), float(xy), float(xz))
+    view.v_axis = (dy * xz - dz * xy, dz * xx - dx * xz, dx * xy - dy * xx)
+    for comp in (hlr.VCompound(), hlr.OutLineVCompound()):
+        for e in _edges(comp):
+            view.visible.append(_discretize(e, size / 1000.0))
+    if with_hidden and name != "iso":
+        for comp in (hlr.HCompound(), hlr.OutLineHCompound()):
+            for e in _edges(comp):
+                view.hidden.append(_discretize(e, size / 1000.0))
+    return view

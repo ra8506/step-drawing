@@ -3,6 +3,15 @@ import sys
 
 
 def run():
+    if len(sys.argv) > 2 and sys.argv[1] == "--selftest":  # used by the installer build to test worker processes
+        from .worker import Engine
+
+        eng = Engine(sys.argv[2], False, workers=2)
+        try:
+            ok = eng.project("top", True).result(timeout=300).circles and eng.info().result(timeout=300)["solids"]
+        finally:
+            eng.stop()
+        sys.exit(0 if ok else 3)
     if len(sys.argv) > 1 and sys.argv[1] == "--cli":
         from .cli import main
 

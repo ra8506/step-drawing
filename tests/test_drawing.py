@@ -102,3 +102,17 @@ def test_notes_and_confidential():
     assert {"NOTES:", "1.", "2.", "BREAK SHARP EDGES", "DEBURR", "CONFIDENTIAL · PROPRIETARY"} <= t
     assert any("ACME" in x for x in t)
     assert any("TOLERANCES ±0.1" in x for x in t)
+
+
+def test_worker_processes():
+    from stepdraw.worker import Engine
+
+    eng = Engine(SAMPLES / "plate.step", False, workers=1)
+    try:
+        assert eng.info().result(timeout=120)["solids"] == 1
+        fast = eng.project("top", True, fast=True).result(timeout=120)
+        exact = eng.project("top", True).result(timeout=120)
+        assert fast.visible and not fast.circles
+        assert len([c for c in exact.circles if c.full]) == 5
+    finally:
+        eng.stop()
