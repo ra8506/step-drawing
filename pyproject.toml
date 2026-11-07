@@ -1,0 +1,24 @@
+[project]
+name = "stepdraw"
+dynamic = ["version"]
+description = "Turn STEP models into dimensioned 2D engineering drawings (PDF, DXF, SVG)"
+requires-python = ">=3.11"
+dependencies = ["cadquery-ocp==8.0.1.1.0", "PySide6-Essentials==6.12.0", "ezdxf==1.4.5"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+stepdraw-cli = "stepdraw.cli:main"
+
+[project.gui-scripts]
+stepdraw = "stepdraw.__main__:run"
+
+[tool.setuptools.dynamic]
+version = { attr = "stepdraw.__version__" }
+
+[tool.setuptools]
+packages = ["stepdraw"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

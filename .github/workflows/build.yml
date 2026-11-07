@@ -1,0 +1,66 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - run: pip install -r requirements.txt pytest
+      - run: QT_QPA_PLATFORM=offscreen pytest -q
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check tag matches app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path stepdraw\__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match __version__ $v" }
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
+          "C:\Program Files (x86)\Inno Setup 6" | Out-File -Append $env:GITHUB_PATH
+      - name: Build
+        shell: pwsh
+        run: .\packaging\build_windows.ps1
+      - name: Test installer (silent install, then run installed app headless)
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\*Setup.exe)[0].FullName
+          Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Get-Process | Where-Object { $_.Path -like "*STEP Drawing*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          $dir = "$env:LOCALAPPDATA\Programs\STEP Drawing"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          & "$dir\python\python.exe" -m stepdraw --cli "$dir\samples\plate.step" -o "$env:RUNNER_TEMP\installed.pdf"
+          if (-not (Test-Path "$env:RUNNER_TEMP\installed.pdf")) { throw "installed app failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: STEP-Drawing-Setup
+          path: dist/*Setup.exe
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*Setup.exe
+          generate_release_notes: true
