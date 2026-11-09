@@ -54,6 +54,10 @@ Root: HKCU; Subkey: "Software\Classes\StepDrawing.step\DefaultIcon"; ValueType: 
 Root: HKCU; Subkey: "Software\Classes\StepDrawing.step\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExe}"" ""%1"""
 Root: HKCU; Subkey: "Software\Classes\.step\OpenWithProgids"; ValueType: string; ValueName: "StepDrawing.step"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\.stp\OpenWithProgids"; ValueType: string; ValueName: "StepDrawing.step"; ValueData: ""; Flags: uninsdeletevalue
+; Gerber board outlines (.gbr, .gko, .gm1) open the same way.
+Root: HKCU; Subkey: "Software\Classes\.gbr\OpenWithProgids"; ValueType: string; ValueName: "StepDrawing.step"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.gko\OpenWithProgids"; ValueType: string; ValueName: "StepDrawing.step"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.gm1\OpenWithProgids"; ValueType: string; ValueName: "StepDrawing.step"; ValueData: ""; Flags: uninsdeletevalue
 
 [Run]
 ; Runs after both normal installs (as a checkbox) and silent in-app updates (relaunch).

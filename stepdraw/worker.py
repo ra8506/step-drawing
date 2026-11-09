@@ -1,7 +1,7 @@
 """Heavy geometry work in separate processes.
 
 Open CASCADE calls hold Python's GIL, so running them on a thread still freezes the window. Each worker
-process loads the STEP file once and then projects views on request; the GUI only receives the 2D results.
+process loads the model (STEP, or a Gerber board outline) once and then projects views on request; the GUI only receives the 2D results.
 """
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ _SHAPE = None
 
 def _init(path: str, y_up: bool):
     global _SHAPE
-    from .geometry import load_step
+    from .geometry import load_model
 
-    _SHAPE = load_step(path, y_up=y_up)
+    _SHAPE = load_model(path, y_up=y_up)
 
 
 def _info():

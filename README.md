@@ -2,6 +2,9 @@
 
 A Windows desktop app that turns a STEP (`.step` / `.stp`) model into a dimensioned 2D engineering drawing.
 
+- **Gerber import:** open a PCB board-outline Gerber (KiCad Edge.Cuts `.gbr`, Altium `.gko`/`.gm1`, Eagle `.gml`)
+  and get a drawing of the board: outline, corner radii, cutouts and mounting holes, at 1.6 mm thick
+  (`--board-thickness` on the command line). Copper and silkscreen layers are not used.
 - **Views:** front, top, side (third-angle or first-angle projection) and isometric, with hidden lines.
 - **Automatic dimensions:** overall size, step and shoulder positions, hole diameters with counts (`4× Ø8`), hole positions from a datum edge, fillet radii, centre marks.
 - **Sheet:** A4–A1 or ANSI A–D with automatic standard scale and an editable title block.

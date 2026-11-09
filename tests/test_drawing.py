@@ -129,3 +129,47 @@ def test_confidential_notice_fits_its_box(sheet_size):
     assert lines
     for t in lines:
         assert t.x + min(text_width(t.text, t.height), t.max_width) <= right - 1.0
+
+
+# ----------------------------------------------------------------------------- Gerber import
+def test_gerber_board_drawing():
+    from stepdraw.geometry import load_model, shape_info
+
+    shape = load_model(SAMPLES / "board_outline.gbr")
+    sx, sy, sz = shape_info(shape)["size"]
+    assert (round(sx, 3), round(sy, 3), round(sz, 3)) == (100, 60, 1.6)
+    sheet = make_drawing(shape, Options(), "board")
+    t = {e.text for e in sheet.entities if isinstance(e, Text)}
+    assert {"100", "60", "1.6", "4× Ø3.2", "R2", "5", "95"} <= t
+
+
+def test_gerber_inches_trailing_zeros_and_single_quadrant():
+    from stepdraw.gerber import board_solid, parse
+    from stepdraw.geometry import shape_info
+
+    # 2 x 1 inch board, %FSTAX24Y24% (trailing zeros omitted, so X019 = 1.9 in), legacy G74 corner arc
+    src = """%FSTAX24Y24*%%MOIN*%%ADD10C,0.01*%D10*G01*
+    X0Y0D02*X019Y0D01*G74*G03*X02Y001I0J001D01*G01*X02Y01D01*X0Y01D01*X0Y0D01*M02*"""
+    segs = parse(src)
+    assert segs[0].b == pytest.approx((1.9 * 25.4, 0.0))
+    assert segs[1].center == pytest.approx((1.9 * 25.4, 0.1 * 25.4))
+    sx, sy, _ = shape_info(board_solid(segs, 1.0))["size"]
+    assert abs(sx - 50.8) < 1e-3 and abs(sy - 25.4) < 1e-3
+
+
+def test_gerber_errors():
+    from stepdraw.gerber import GerberError, outline, parse
+
+    with pytest.raises(GerberError, match="no %FS"):
+        parse("hello*")
+    open_path = parse("%FSLAX26Y26*%%MOMM*%X0Y0D02*X1000000Y0D01*X1000000Y1000000D01*M02*")
+    with pytest.raises(GerberError, match="board outline layer"):
+        outline(open_path)
+
+
+def test_cli_gerber(tmp_path):
+    from stepdraw.cli import main
+
+    out = tmp_path / "board.dxf"
+    assert main([str(SAMPLES / "board_outline.gbr"), "-o", str(out), "--board-thickness", "0.8"]) == 0
+    assert out.stat().st_size > 1000

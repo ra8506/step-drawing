@@ -18,8 +18,13 @@ from PySide6.QtWidgets import (
 from . import APP_NAME, __version__
 from .drawing import SCALES, SHEETS, Options, Tol, build_sheet, dim_text
 from .export import export, paint
+from .gerber import GERBER_EXTS
 
-STEP_FILTER = "STEP files (*.step *.stp *.STEP *.STP);;All files (*)"
+OPEN_EXTS = (".step", ".stp") + GERBER_EXTS
+STEP_FILTER = ("Models (" + " ".join(f"*{e} *{e.upper()}" for e in OPEN_EXTS) + ");;"
+               "STEP files (*.step *.stp *.STEP *.STP);;"
+               "Gerber board outline (" + " ".join(f"*{e} *{e.upper()}" for e in GERBER_EXTS) + ");;"
+               "All files (*)")
 
 
 # ----------------------------------------------------------------------------- background work
@@ -81,7 +86,7 @@ class SheetView(QWidget):
         self.setMinimumSize(400, 300)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
-        self.message = "Open a STEP file to start  (File ▸ Open, or drag a .step file here)"
+        self.message = "Open a STEP file or Gerber board outline to start  (File ▸ Open, or drag a file here)"
 
     def set_sheet(self, sheet, reset=False):
         self.sheet = sheet
@@ -302,7 +307,7 @@ class MainWindow(QMainWindow):
                 tb.addAction(a)
             return a
 
-        act("Open STEP…", self.open_dialog, "Ctrl+O")
+        act("Open STEP / Gerber…", self.open_dialog, "Ctrl+O")
         fm.addSeparator()
         tb.addSeparator()
         self.export_actions = [
@@ -598,13 +603,13 @@ class MainWindow(QMainWindow):
     def dropEvent(self, e):
         for url in e.mimeData().urls():
             p = url.toLocalFile()
-            if p.lower().endswith((".step", ".stp")):
+            if p.lower().endswith(OPEN_EXTS):
                 self.open_path(p)
                 return
 
     def open_dialog(self):
         start = self.settings.value("last_dir", str(Path.home()))
-        p, _ = QFileDialog.getOpenFileName(self, "Open STEP file", start, STEP_FILTER)
+        p, _ = QFileDialog.getOpenFileName(self, "Open STEP or Gerber file", start, STEP_FILTER)
         if p:
             self.open_path(p)
 
@@ -844,7 +849,7 @@ class MainWindow(QMainWindow):
     def about(self):
         QMessageBox.about(
             self, f"About {APP_NAME}",
-            f"<b>{APP_NAME}</b> {__version__}<br><br>Turns STEP models into dimensioned 2D drawings."
+            f"<b>{APP_NAME}</b> {__version__}<br><br>Turns STEP models and Gerber board outlines into dimensioned 2D drawings."
             "<br>Geometry kernel: Open CASCADE Technology (LGPL).")
 
 
@@ -857,7 +862,7 @@ def main():
         app.setWindowIcon(QIcon(str(icon)))
     w = MainWindow()
     w.show()
-    args = [a for a in sys.argv[1:] if a.lower().endswith((".step", ".stp"))]
+    args = [a for a in sys.argv[1:] if a.lower().endswith(OPEN_EXTS)]
     if args:
         QTimer.singleShot(0, lambda: w.open_path(args[0]))
     sys.exit(app.exec())
