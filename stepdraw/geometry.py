@@ -63,9 +63,9 @@ def load_step(path: str | Path, y_up: bool = False) -> TopoDS_Shape:
 
 def load_model(path: str | Path, y_up: bool = False, board_thickness: float | None = None) -> TopoDS_Shape:
     """Load a STEP model, or build a board solid from a Gerber board-outline file."""
-    from .gerber import DEFAULT_THICKNESS, GERBER_EXTS, load_gerber
+    from .gerber import DEFAULT_THICKNESS, load_gerber, looks_like_gerber
 
-    if Path(path).suffix.lower() in GERBER_EXTS:
+    if looks_like_gerber(path):
         return load_gerber(path, board_thickness or DEFAULT_THICKNESS)
     return load_step(path, y_up=y_up)
 

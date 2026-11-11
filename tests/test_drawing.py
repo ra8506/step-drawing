@@ -223,3 +223,25 @@ def test_background_callbacks_run_on_gui_thread():
     loop.exec()
     QCoreApplication.processEvents()
     assert seen == {"done": True, "fail": True}
+
+
+def test_gerber_altium_mechanical_layer():
+    """Inch units, modal coordinates, outline drawn twice, closed text box outside the board."""
+    from stepdraw.geometry import load_model, shape_info
+
+    shape = load_model(SAMPLES / "altium_mech.GM2")
+    sx, sy, _ = shape_info(shape)["size"]
+    assert abs(sx - 50.8) < 1e-3 and abs(sy - 38.1) < 1e-3
+    t = {e.text for e in make_drawing(shape, Options(), "b").entities if isinstance(e, Text)}
+    assert "Ø3.2" in t  # 0.125 in hole
+
+
+def test_gerber_wrong_layer_and_detection(tmp_path):
+    from stepdraw.gerber import GerberError, load_gerber, looks_like_gerber
+
+    with pytest.raises(GerberError, match="top copper"):
+        load_gerber(SAMPLES / "altium_top.GTL")
+    odd = tmp_path / "outline.xyz"
+    odd.write_bytes((SAMPLES / "board_outline.gbr").read_bytes())
+    assert looks_like_gerber(odd) and looks_like_gerber(SAMPLES / "altium_mech.GM2")
+    assert not looks_like_gerber(SAMPLES / "plate.step")
