@@ -7,7 +7,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QSettings, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QPointF, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog,
@@ -45,20 +45,42 @@ class Worker(QObject):
             self.failed.emit(str(e) or e.__class__.__name__)
 
 
+class _Relay(QObject):
+    """Lives on the GUI thread, so the worker's results are handled there (Qt widgets are not thread-safe)."""
+
+    def __init__(self, on_done, on_fail, on_progress):
+        super().__init__()
+        self._done, self._fail, self._progress = on_done, on_fail, on_progress
+
+    @Slot(object)
+    def done(self, result):
+        self._done(result)
+
+    @Slot(str)
+    def failed(self, msg):
+        self._fail(msg)
+
+    @Slot(str)
+    def progress(self, value):
+        if self._progress:
+            self._progress(value)
+
+
 def run_in_thread(owner, fn, on_done, on_fail, on_progress=None):
+    """Run fn(progress) on a background thread; the callbacks always run on the GUI thread."""
     th = QThread(owner)
     w = Worker(fn)
+    relay = _Relay(on_done, on_fail, on_progress)  # created here, on the GUI thread
     w.moveToThread(th)
     th.started.connect(w.run)
-    w.done.connect(on_done)
-    w.failed.connect(on_fail)
-    if on_progress:
-        w.progress.connect(on_progress)
+    w.done.connect(relay.done)
+    w.failed.connect(relay.failed)
+    w.progress.connect(relay.progress)
     w.done.connect(th.quit)
     w.failed.connect(th.quit)
     th.finished.connect(w.deleteLater)
     th.finished.connect(th.deleteLater)
-    owner._workers = getattr(owner, "_workers", []) + [(th, w)]
+    owner._workers = getattr(owner, "_workers", []) + [(th, w, relay)]
     th.start()
 
 

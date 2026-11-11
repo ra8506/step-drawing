@@ -173,3 +173,53 @@ def test_cli_gerber(tmp_path):
     out = tmp_path / "board.dxf"
     assert main([str(SAMPLES / "board_outline.gbr"), "-o", str(out), "--board-thickness", "0.8"]) == 0
     assert out.stat().st_size > 1000
+
+
+# ----------------------------------------------------------------------------- updates
+def test_update_check_parses_release(monkeypatch):
+    import io
+    import json
+
+    from stepdraw import updater
+
+    payload = {"tag_name": "v99.0.0", "body": "notes", "html_url": "page",
+               "assets": [{"name": "STEP-Drawing-99.0.0-Setup.exe", "browser_download_url": "dl"}]}
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda req, timeout: Resp(json.dumps(payload).encode()))
+    rel = updater.check()
+    assert rel and rel.version == "99.0.0" and rel.url == "dl"
+
+
+def test_background_callbacks_run_on_gui_thread():
+    """Update dialogs are shown from these callbacks; off the GUI thread they freeze the app on Windows."""
+    import threading
+
+    from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QTimer
+
+    from stepdraw.app import run_in_thread
+
+    main = threading.get_ident()
+    seen = {}
+    loop = QEventLoop()
+    owner = QObject()
+
+    def fail(msg):
+        seen["fail"] = threading.get_ident() == main
+        loop.quit()
+
+    def done(r):
+        seen["done"] = threading.get_ident() == main
+        run_in_thread(owner, lambda p: (_ for _ in ()).throw(RuntimeError("x")), None, fail)
+
+    run_in_thread(owner, lambda p: 1, done, None)
+    QTimer.singleShot(10000, loop.quit)
+    loop.exec()
+    QCoreApplication.processEvents()
+    assert seen == {"done": True, "fail": True}

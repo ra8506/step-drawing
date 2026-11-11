@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
@@ -43,8 +44,6 @@ def is_newer(remote: str, local: str = __version__) -> bool:
 
 def latest_release(timeout: float = 8.0) -> Release | None:
     req = urllib.request.Request(API, headers={"User-Agent": "STEP-Drawing-Updater", "Accept": "application/vnd.github+json"})
-    import urllib.error
-
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
