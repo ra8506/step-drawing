@@ -16,7 +16,28 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-GERBER_EXTS = (".gbr", ".ger", ".gko", ".gm1", ".gm", ".gml", ".gbo", ".pho", ".art")
+# Board-outline layers by CAD tool: KiCad .gbr/.gm1, Altium .gko and mechanical layers .gm1-.gm32,
+# Eagle .gml, generic .ger/.pho/.art. Copper/mask/silk extensions are recognised only to say "wrong layer".
+OUTLINE_EXTS = (".gbr", ".ger", ".gko", ".gm", ".gml", ".pho", ".art") + tuple(f".gm{i}" for i in range(1, 33))
+NOT_OUTLINE_EXTS = {".gtl": "top copper", ".gbl": "bottom copper", ".gto": "top silkscreen",
+                    ".gbo": "bottom silkscreen", ".gts": "top solder mask", ".gbs": "bottom solder mask",
+                    ".gtp": "top paste", ".gbp": "bottom paste", ".gpt": "top pad", ".gpb": "bottom pad"}
+NOT_OUTLINE_EXTS.update({f".g{i}": "inner copper" for i in range(1, 33)})
+GERBER_EXTS = OUTLINE_EXTS + tuple(NOT_OUTLINE_EXTS)
+
+
+def looks_like_gerber(path: str | Path) -> bool:
+    """True for a Gerber file, judged by extension or (for unknown extensions) by its first few KB."""
+    if Path(path).suffix.lower() in GERBER_EXTS:
+        return True
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096).decode("ascii", errors="replace")
+    except OSError:
+        return False
+    return "ISO-10303-21" not in head and bool(re.search(r"%FS[LTD]?[AI]?.*X\d\dY\d\d", head))
+
+
 DEFAULT_THICKNESS = 1.6  # mm, the usual FR-4 board
 
 Pt = tuple[float, float]
@@ -204,8 +225,24 @@ def _single_quadrant_center(a: Pt, b: Pt, i: float, j: float, ccw: bool) -> Pt:
 
 
 # ----------------------------------------------------------------------------- loops
-def chain(segs: list[Seg], tol: float = 0.01) -> list[list[Seg]]:
+def _dedupe(segs: list[Seg], tol: float) -> list[Seg]:
+    """Drop segments drawn twice (either direction); CAD tools often overlap outline layers."""
+    out: list[Seg] = []
+    for s in segs:
+        for t in out:
+            same = (_close(s.a, t.a, tol) and _close(s.b, t.b, tol) and s.ccw == t.ccw) or \
+                   (_close(s.a, t.b, tol) and _close(s.b, t.a, tol) and (s.ccw != t.ccw or s.center is None))
+            if same and (s.center is None) == (t.center is None) and \
+                    (s.center is None or _close(s.center, t.center, tol)):
+                break
+        else:
+            out.append(s)
+    return out
+
+
+def chain(segs: list[Seg], tol: float = 0.02) -> list[list[Seg]]:
     """Join segments end to end into closed loops. Open chains are dropped."""
+    segs = _dedupe(segs, tol)
     loops = [[s] for s in segs if s.full_circle]
     rest = [s for s in segs if not s.full_circle]
     used = [False] * len(rest)
@@ -257,7 +294,7 @@ def _inside(p: Pt, loop: list[Seg]) -> bool:
 
 def outline(segs: list[Seg]) -> tuple[list[Seg], list[list[Seg]]]:
     """Pick the board edge (largest loop) and the loops inside it (cutouts / holes)."""
-    loops = chain(segs)
+    loops = [lp for lp in chain(segs) if abs(_area(lp)) > 1e-6]
     if not loops:
         raise GerberError("No closed board outline found. Open the board outline layer "
                           "(Edge.Cuts, .GKO, .GM1 or .GML), not a copper or silkscreen layer.")
@@ -310,10 +347,27 @@ def board_solid(segs: list[Seg], thickness: float = DEFAULT_THICKNESS):
     return BRepPrimAPI_MakePrism(mk.Face(), gp_Vec(0, 0, thickness)).Shape()
 
 
+def _wrong_layer(path: Path, text: str) -> str | None:
+    kind = NOT_OUTLINE_EXTS.get(path.suffix.lower())
+    m = re.search(r"%TF\.FileFunction,([A-Za-z]+)", text)
+    if m and m.group(1).lower() in ("copper", "soldermask", "legend", "paste", "plated", "nonplated"):
+        kind = kind or m.group(1).lower()
+    elif m:  # the file says what it is (Profile, Mechanical, Other ...): trust it over the extension
+        kind = None
+    if kind:
+        return (f"{path.name} is the {kind} layer. Open the board outline instead: the .GKO (keep-out) "
+                f"or the mechanical layer that holds the board shape (.GM1, .GM2 …), or KiCad's Edge_Cuts.gbr.")
+    return None
+
+
 def load_gerber(path: str | Path, thickness: float = DEFAULT_THICKNESS):
     """Read a Gerber board outline and return the board as a solid (mm), top face up (+Z)."""
+    path = Path(path)
     try:
-        text = Path(path).read_text(encoding="ascii", errors="replace")
+        text = path.read_text(encoding="ascii", errors="replace")
     except OSError as e:
         raise GerberError(f"Could not read {path}: {e}") from e
+    wrong = _wrong_layer(path, text)
+    if wrong:
+        raise GerberError(wrong)
     return board_solid(parse(text), thickness)

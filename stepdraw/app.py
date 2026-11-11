@@ -18,13 +18,18 @@ from PySide6.QtWidgets import (
 from . import APP_NAME, __version__
 from .drawing import SCALES, SHEETS, Options, Tol, build_sheet, dim_text
 from .export import export, paint
-from .gerber import GERBER_EXTS
+from .gerber import GERBER_EXTS, looks_like_gerber
 
 OPEN_EXTS = (".step", ".stp") + GERBER_EXTS
-STEP_FILTER = ("Models (" + " ".join(f"*{e} *{e.upper()}" for e in OPEN_EXTS) + ");;"
+_PATTERNS = ["*.step", "*.stp", "*.gbr", "*.ger", "*.gko", "*.gm*", "*.gml", "*.pho", "*.art",
+             "*.gtl", "*.gbl", "*.gto", "*.gbo", "*.gts", "*.gbs"]
+STEP_FILTER = ("STEP or Gerber (" + " ".join(_PATTERNS + [p.upper() for p in _PATTERNS]) + ");;"
                "STEP files (*.step *.stp *.STEP *.STP);;"
-               "Gerber board outline (" + " ".join(f"*{e} *{e.upper()}" for e in GERBER_EXTS) + ");;"
                "All files (*)")
+
+
+def can_open(path: str) -> bool:
+    return path.lower().endswith((".step", ".stp")) or looks_like_gerber(path)
 
 
 # ----------------------------------------------------------------------------- background work
@@ -625,7 +630,7 @@ class MainWindow(QMainWindow):
     def dropEvent(self, e):
         for url in e.mimeData().urls():
             p = url.toLocalFile()
-            if p.lower().endswith(OPEN_EXTS):
+            if can_open(p):
                 self.open_path(p)
                 return
 
@@ -884,7 +889,7 @@ def main():
         app.setWindowIcon(QIcon(str(icon)))
     w = MainWindow()
     w.show()
-    args = [a for a in sys.argv[1:] if a.lower().endswith(OPEN_EXTS)]
+    args = [a for a in sys.argv[1:] if can_open(a)]
     if args:
         QTimer.singleShot(0, lambda: w.open_path(args[0]))
     sys.exit(app.exec())

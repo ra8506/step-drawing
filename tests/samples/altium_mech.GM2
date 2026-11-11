@@ -1,0 +1,27 @@
+G04 Altium-style mechanical layer: 2.0 x 1.5 in board, one Ø0.125 in hole, outline drawn twice, label text outside*
+G04 Layer: Mechanical2*
+%FSLAX25Y25*%
+%MOIN*%
+%TF.FileFunction,Other,Mechanical2*%
+%ADD10C,0.00787*%
+G01*
+G75*
+G54D10*
+X0Y0D02*
+X200000D01*
+Y150000D01*
+X0D01*
+Y0D01*
+X200000D01*
+Y150000D01*
+X0D01*
+Y0D01*
+X106250Y75000D02*
+G03X106250Y75000I-6250J0D01*
+G01*
+X0Y-30000D02*
+X10000Y-30000D01*
+X10000Y-20000D01*
+X0Y-20000D01*
+X0Y-30000D01*
+M02*

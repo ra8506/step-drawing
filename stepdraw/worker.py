@@ -10,17 +10,24 @@ import os
 from concurrent.futures import Future, ProcessPoolExecutor
 
 _SHAPE = None
+_LOAD_ERROR: Exception | None = None
 
 
 def _init(path: str, y_up: bool):
-    global _SHAPE
+    global _SHAPE, _LOAD_ERROR
     from .geometry import load_model
 
-    _SHAPE = load_model(path, y_up=y_up)
+    try:
+        _SHAPE = load_model(path, y_up=y_up)
+    except Exception as e:  # keep the message: an initializer error would only surface as "broken pool"
+        _LOAD_ERROR = e
 
 
 def _info():
     from .geometry import shape_info
+
+    if _LOAD_ERROR is not None:
+        raise _LOAD_ERROR
 
     return shape_info(_SHAPE)
 
@@ -28,6 +35,8 @@ def _info():
 def _project(src: str, hidden: bool, fast: bool):
     from .geometry import project, project_fast
 
+    if _LOAD_ERROR is not None:
+        raise _LOAD_ERROR
     return (project_fast if fast else project)(_SHAPE, src, with_hidden=hidden)
 
 
